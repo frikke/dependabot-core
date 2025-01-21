@@ -19,19 +19,22 @@ module Dependabot
 
       sig { params(path: T.any(Pathname, String)).void }
       def initialize(path)
-        super(path)
+        super
         @initial_head_sha = T.let(head_sha, String)
         configure_git
       end
 
       sig { returns(T::Boolean) }
       def changed?
-        changes.any? || !changed_files.empty?
+        changes.any? || !changed_files(ignored_mode: "no").empty?
       end
 
       sig { override.returns(String) }
       def to_patch
-        run_shell_command("git diff --patch #{@initial_head_sha}.. .")
+        run_shell_command(
+          "git diff --patch #{@initial_head_sha}.. .",
+          fingerprint: "git diff --path <initial_head_sha>.. ."
+        )
       end
 
       sig { override.returns(NilClass) }
@@ -50,12 +53,12 @@ module Dependabot
           .returns(T.nilable(T::Array[Dependabot::Workspace::ChangeAttempt]))
       end
       def store_change(memo = nil)
-        return nil if changed_files.empty?
+        return nil if changed_files(ignored_mode: "no").empty?
 
         debug("store_change - before: #{current_commit}")
-        sha, diff = commit(memo)
+        sha = commit(memo)
 
-        change_attempts << ChangeAttempt.new(self, id: sha, memo: memo, diff: diff)
+        change_attempts << ChangeAttempt.new(self, id: sha, memo: memo)
       ensure
         debug("store_change - after: #{current_commit}")
       end
@@ -70,8 +73,8 @@ module Dependabot
       def capture_failed_change_attempt(memo = nil, error = nil)
         return nil if changed_files(ignored_mode: "matching").empty? && error.nil?
 
-        sha, diff = stash(memo)
-        change_attempts << ChangeAttempt.new(self, id: sha, memo: memo, diff: diff, error: error)
+        sha = stash(memo)
+        change_attempts << ChangeAttempt.new(self, id: sha, memo: memo, error: error)
       end
 
       private
@@ -84,7 +87,7 @@ module Dependabot
 
       sig { returns(String) }
       def head_sha
-        run_shell_command("git rev-parse HEAD").strip
+        run_shell_command("git rev-parse HEAD", stderr_to_stdout: false).strip
       end
 
       sig { returns(String) }
@@ -94,7 +97,7 @@ module Dependabot
 
       sig { returns(String) }
       def current_commit
-        # Avoid emiting the user's commit message to logs if Dependabot hasn't made any changes
+        # Avoid emitting the user's commit message to logs if Dependabot hasn't made any changes
         return "Initial SHA: #{initial_head_sha}" if changes.empty?
 
         # Prints out the last commit in the format "<short-ref> <commit-message>"
@@ -103,35 +106,45 @@ module Dependabot
 
       sig { params(ignored_mode: String).returns(String) }
       def changed_files(ignored_mode: "traditional")
-        run_shell_command("git status --untracked-files=all --ignored=#{ignored_mode} --short .").strip
+        run_shell_command(
+          "git status --untracked-files=all --ignored=#{ignored_mode} --short .",
+          fingerprint: "git status --untracked-files=all --ignored=<ignored_mode> --short ."
+        ).strip
       end
 
-      sig { params(memo: T.nilable(String)).returns([String, String]) }
+      sig { params(memo: T.nilable(String)).returns(String) }
       def stash(memo = nil)
         msg = memo || "workspace change attempt"
         run_shell_command("git add --all --force .")
-        run_shell_command(%(git stash push --all -m "#{msg}"), allow_unsafe_shell_command: true)
+        run_shell_command(
+          %(git stash push --all -m "#{msg}"),
+          fingerprint: "git stash push --all -m \"<msg>\"",
+          allow_unsafe_shell_command: true
+        )
 
-        sha = last_stash_sha
-        diff = run_shell_command("git stash show --patch #{sha}")
-
-        [sha, diff]
+        last_stash_sha
       end
 
-      sig { params(memo: T.nilable(String)).returns([String, String]) }
+      sig { params(memo: T.nilable(String)).returns(String) }
       def commit(memo = nil)
         run_shell_command("git add #{path}")
-        diff = run_shell_command("git diff --cached .")
 
         msg = memo || "workspace change"
-        run_shell_command(%(git commit -m "#{msg}"), allow_unsafe_shell_command: true)
+        run_shell_command(
+          %(git commit -m "#{msg}"),
+          fingerprint: "git commit -m \"<msg>\"",
+          allow_unsafe_shell_command: true
+        )
 
-        [head_sha, diff]
+        head_sha
       end
 
       sig { params(sha: String).returns(String) }
       def reset(sha)
-        run_shell_command("git reset --hard #{sha}")
+        run_shell_command(
+          "git reset --hard #{sha}",
+          fingerprint: "git reset --hard <sha>"
+        )
       end
 
       sig { override.returns(String) }
@@ -139,7 +152,7 @@ module Dependabot
         run_shell_command("git clean -fx .")
       end
 
-      sig { params(args: String, kwargs: T::Boolean).returns(String) }
+      sig { params(args: String, kwargs: T.any(T::Boolean, String)).returns(String) }
       def run_shell_command(*args, **kwargs)
         Dir.chdir(path) { T.unsafe(SharedHelpers).run_shell_command(*args, **kwargs) }
       end

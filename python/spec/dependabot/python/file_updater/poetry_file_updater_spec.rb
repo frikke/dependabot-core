@@ -54,12 +54,12 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
   end
   let(:dependency_name) { "requests" }
   let(:credentials) do
-    [{
+    [Dependabot::Credential.new({
       "type" => "git_source",
       "host" => "github.com",
       "username" => "x-access-token",
       "password" => "token"
-    }]
+    })]
   end
 
   describe "#updated_dependency_files" do
@@ -113,6 +113,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         requests = lockfile_obj["package"].find { |d| d["name"] == "requests" }
         expect(requests["version"]).to eq("2.19.1")
       end
+
       it "does not change python version" do
         updated_pyproj = updated_files.find { |f| f.name == "pyproject.toml" }
         pyproj_obj = TomlRB.parse(updated_pyproj.content)
@@ -148,6 +149,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
           }]
         )
       end
+
       it "updates the lockfile" do
         updated_lockfile = updated_files.find { |f| f.name == "poetry.lock" }
 
@@ -191,7 +193,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         end
       end
 
-      context "that's indented" do
+      context "when dealing with indented" do
         let(:pyproject_fixture_name) { "indented.toml" }
         let(:dependency) do
           Dependabot::Dependency.new(
@@ -222,7 +224,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         end
       end
 
-      context "specifying table style dependencies" do
+      context "when specifying table style dependencies" do
         let(:pyproject_fixture_name) { "table.toml" }
         let(:dependency_name) { "isort" }
         let(:dependency) do
@@ -258,7 +260,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         end
       end
 
-      context "specifying table style dependencies with version as the last field" do
+      context "when specifying table style dependencies with version as the last field" do
         let(:pyproject_fixture_name) { "table_version_last.toml" }
         let(:dependency_name) { "isort" }
         let(:dependency) do
@@ -295,7 +297,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         end
       end
 
-      context "specifying table style dependencies with version conflicting with other deps" do
+      context "when specifying table style dependencies with version conflicting with other deps" do
         let(:pyproject_fixture_name) { "table_version_conflicts.toml" }
         let(:dependency_name) { "isort" }
         let(:dependency) do
@@ -501,6 +503,155 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         end
       end
 
+      context "with inline comments in the dependencies groups" do
+        let(:pyproject_fixture_name) { "inline_comments.toml" }
+        let(:dependency) do
+          Dependabot::Dependency.new(
+            name: dependency_name,
+            version: "1.27.2",
+            previous_version: "1.18.1",
+            package_manager: "pip",
+            requirements: requirements,
+            previous_requirements: previous_requirements
+          )
+        end
+
+        context "when dealing with the dependency in the main dependencies group" do
+          let(:dependency_name) { "jsonschema" }
+          let(:requirements) do
+            [{
+              requirement: "^4.19.1",
+              file: "pyproject.toml",
+              source: nil,
+              groups: ["dependencies"]
+            }]
+          end
+          let(:previous_requirements) do
+            [{
+              requirement: "^4.18.5",
+              file: "pyproject.toml",
+              source: nil,
+              groups: ["dependencies"]
+            }]
+          end
+
+          it "updates the pyproject.toml correctly" do
+            expect(updated_files.map(&:name)).to eq(%w(pyproject.toml))
+
+            updated_lockfile = updated_files.find { |f| f.name == "pyproject.toml" }
+
+            expect(updated_lockfile.content).to include <<~TOML
+              [tool.poetry.dependencies]  # Main (runtime) dependencies
+              python = "~3.10"
+              jsonschema = "^4.19.1"  # jsonschema library
+              packaging = ">=20.0"
+
+              [tool.poetry.group.dev.dependencies]        # Development (local) dependencies
+              black = "^20.8b1"
+              flake8 = "^4.0.1"                   # flake8
+              flake8-implicit-str-concat = "^0.4.0"
+              isort = "^5.9.3"
+              mypy = "^1.6"
+
+              [tool.poetry.group.test.dependencies]# Test dependencies
+              coverage = {extras = ["toml"], version = "^7.3.2"}
+              pytest = "^7.4.0"#pytest
+              pytest-mock = ">=3.8.2"
+            TOML
+          end
+        end
+
+        context "when dealing with the dependency in the dev dependencies group with multiple spaces" do
+          let(:dependency_name) { "isort" }
+          let(:requirements) do
+            [{
+              requirement: "^5.12.0",
+              file: "pyproject.toml",
+              source: nil,
+              groups: ["dev"]
+            }]
+          end
+          let(:previous_requirements) do
+            [{
+              requirement: "^5.9.3",
+              file: "pyproject.toml",
+              source: nil,
+              groups: ["dev"]
+            }]
+          end
+
+          it "updates the pyproject.toml correctly" do
+            expect(updated_files.map(&:name)).to eq(%w(pyproject.toml))
+
+            updated_lockfile = updated_files.find { |f| f.name == "pyproject.toml" }
+
+            expect(updated_lockfile.content).to include <<~TOML
+              [tool.poetry.dependencies]  # Main (runtime) dependencies
+              python = "~3.10"
+              jsonschema = "^4.18.5"  # jsonschema library
+              packaging = ">=20.0"
+
+              [tool.poetry.group.dev.dependencies]        # Development (local) dependencies
+              black = "^20.8b1"
+              flake8 = "^4.0.1"                   # flake8
+              flake8-implicit-str-concat = "^0.4.0"
+              isort = "^5.12.0"
+              mypy = "^1.6"
+
+              [tool.poetry.group.test.dependencies]# Test dependencies
+              coverage = {extras = ["toml"], version = "^7.3.2"}
+              pytest = "^7.4.0"#pytest
+              pytest-mock = ">=3.8.2"
+            TOML
+          end
+        end
+
+        context "when dealing with the dependency in the test dependencies group without spaces" do
+          let(:dependency_name) { "pytest-mock" }
+          let(:requirements) do
+            [{
+              requirement: ">=3.12.0",
+              file: "pyproject.toml",
+              source: nil,
+              groups: ["test"]
+            }]
+          end
+          let(:previous_requirements) do
+            [{
+              requirement: ">=3.8.2",
+              file: "pyproject.toml",
+              source: nil,
+              groups: ["test"]
+            }]
+          end
+
+          it "updates the pyproject.toml correctly" do
+            expect(updated_files.map(&:name)).to eq(%w(pyproject.toml))
+
+            updated_lockfile = updated_files.find { |f| f.name == "pyproject.toml" }
+
+            expect(updated_lockfile.content).to include <<~TOML
+              [tool.poetry.dependencies]  # Main (runtime) dependencies
+              python = "~3.10"
+              jsonschema = "^4.18.5"  # jsonschema library
+              packaging = ">=20.0"
+
+              [tool.poetry.group.dev.dependencies]        # Development (local) dependencies
+              black = "^20.8b1"
+              flake8 = "^4.0.1"                   # flake8
+              flake8-implicit-str-concat = "^0.4.0"
+              isort = "^5.9.3"
+              mypy = "^1.6"
+
+              [tool.poetry.group.test.dependencies]# Test dependencies
+              coverage = {extras = ["toml"], version = "^7.3.2"}
+              pytest = "^7.4.0"#pytest
+              pytest-mock = ">=3.12.0"
+            TOML
+          end
+        end
+      end
+
       context "with the same requirement specified in two dependencies" do
         let(:pyproject_fixture_name) { "same_requirements.toml" }
         let(:dependency) do
@@ -524,7 +675,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
           )
         end
 
-        context "for the first dependency" do
+        context "when dealing with the first dependency" do
           let(:dependency_name) { "rq" }
 
           it "updates the pyproject.toml correctly" do
@@ -551,7 +702,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
           end
         end
 
-        context "for the second dependency" do
+        context "when dealing with the second dependency" do
           let(:dependency_name) { "dramatiq" }
 
           it "updates the pyproject.toml correctly" do
@@ -662,12 +813,12 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         )
       end
       let(:credentials) do
-        [{
+        [Dependabot::Credential.new({
           "type" => "python_index",
           "index-url" => "https://some.internal.registry.com/pypi/",
           "username" => "test",
           "password" => "test"
-        }]
+        })]
       end
 
       it "prepares a pyproject file without credentials in" do
@@ -675,7 +826,7 @@ RSpec.describe Dependabot::Python::FileUpdater::PoetryFileUpdater do
         expect(repo_obj[0][:url]).to eq(credentials[0]["index-url"])
 
         user_pass = "#{credentials[0]['user']}:#{credentials[0]['password']}@"
-        expect(repo_obj[0][:url]).to_not include(user_pass)
+        expect(repo_obj[0][:url]).not_to include(user_pass)
       end
     end
   end

@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "excon"
@@ -19,15 +19,23 @@ module Dependabot
   module Python
     class UpdateChecker
       class PipenvVersionResolver
-        GIT_DEPENDENCY_UNREACHABLE_REGEX = /git clone --filter=blob:none (?<url>[^\s]+).*/
+        GIT_DEPENDENCY_UNREACHABLE_REGEX = /git clone --filter=blob:none --quiet (?<url>[^\s]+).*/
         GIT_REFERENCE_NOT_FOUND_REGEX = /git checkout -q (?<tag>[^\s]+).*/
-        PIPENV_INSTALLATION_ERROR = "python setup.py egg_info exited with 1"
+        PIPENV_INSTALLATION_ERROR_NEW = "Getting requirements to build wheel exited with 1"
+
+        # Can be removed when Python 3.11 support is dropped
+        PIPENV_INSTALLATION_ERROR_OLD = Regexp.quote("python setup.py egg_info exited with 1")
+
+        PIPENV_INSTALLATION_ERROR = /#{PIPENV_INSTALLATION_ERROR_NEW}|#{PIPENV_INSTALLATION_ERROR_OLD}/
         PIPENV_INSTALLATION_ERROR_REGEX =
-          /[\s\S]*Collecting\s(?<name>.+)\s\(from\s-r.+\)[\s\S]*#{Regexp.quote(PIPENV_INSTALLATION_ERROR)}/
+          /[\s\S]*Collecting\s(?<name>.+)\s\(from\s-r.+\)[\s\S]*(#{PIPENV_INSTALLATION_ERROR})/
 
-        PIPENV_RANGE_WARNING = /Warning:\sPython\s[<>].* was not found/
+        PIPENV_RANGE_WARNING = /Python version range specifier '(?<ver>.*)' is not supported/
 
-        attr_reader :dependency, :dependency_files, :credentials, :repo_contents_path
+        attr_reader :dependency
+        attr_reader :dependency_files
+        attr_reader :credentials
+        attr_reader :repo_contents_path
 
         def initialize(dependency:, dependency_files:, credentials:, repo_contents_path:)
           @dependency               = dependency
@@ -90,6 +98,19 @@ module Dependabot
             raise DependencyFileNotResolvable, msg
           end
 
+          if error.message.match?(GIT_REFERENCE_NOT_FOUND_REGEX)
+            tag = error.message.match(GIT_REFERENCE_NOT_FOUND_REGEX).named_captures.fetch("tag")
+            # Unfortunately the error message doesn't include the package name.
+            # TODO: Talk with pipenv maintainers about exposing the package name, it used to be part of the error output
+            raise GitDependencyReferenceNotFound, "(unknown package at #{tag})"
+          end
+
+          if error.message.match?(GIT_DEPENDENCY_UNREACHABLE_REGEX)
+            url = error.message.match(GIT_DEPENDENCY_UNREACHABLE_REGEX)
+                       .named_captures.fetch("url")
+            raise GitDependenciesNotReachable, url
+          end
+
           if error.message.include?("Could not find a version") || error.message.include?("ResolutionFailure")
             check_original_requirements_resolvable
           end
@@ -119,20 +140,7 @@ module Dependabot
             return if error.message.match?(/#{Regexp.quote(dependency.name)}/i)
           end
 
-          if error.message.match?(GIT_REFERENCE_NOT_FOUND_REGEX)
-            tag = error.message.match(GIT_REFERENCE_NOT_FOUND_REGEX).named_captures.fetch("tag")
-            # Unfortunately the error message doesn't include the package name.
-            # TODO: Talk with pipenv maintainers about exposing the package name, it used to be part of the error output
-            raise GitDependencyReferenceNotFound, "(unknown package at #{tag})"
-          end
-
-          if error.message.match?(GIT_DEPENDENCY_UNREACHABLE_REGEX)
-            url = error.message.match(GIT_DEPENDENCY_UNREACHABLE_REGEX)
-                       .named_captures.fetch("url")
-            raise GitDependenciesNotReachable, url
-          end
-
-          raise unless error.message.include?("could not be resolved")
+          raise unless error.message.include?("ResolutionFailure")
         end
         # rubocop:enable Metrics/CyclomaticComplexity
         # rubocop:enable Metrics/PerceivedComplexity
@@ -178,10 +186,6 @@ module Dependabot
             raise DependencyFileNotResolvable, msg
           end
 
-          # NOTE: Pipenv masks the actual error, see this issue for updates:
-          # https://github.com/pypa/pipenv/issues/2791
-          # TODO: This may no longer be reproducible on latest pipenv, see linked issue,
-          # so investigate when we next bump to newer pipenv...
           handle_pipenv_installation_error(error.message) if error.message.match?(PIPENV_INSTALLATION_ERROR_REGEX)
 
           # Raise an unhandled error, as this could be a problem with
@@ -280,6 +284,8 @@ module Dependabot
           content = pipfile.content
           content = add_private_sources(content)
           content = update_python_requirement(content)
+          content = update_ssl_requirement(content, pipfile.content)
+
           content
         end
 
@@ -287,6 +293,12 @@ module Dependabot
           Python::FileUpdater::PipfilePreparer
             .new(pipfile_content: pipfile_content)
             .update_python_requirement(language_version_manager.python_major_minor)
+        end
+
+        def update_ssl_requirement(pipfile_content, parsed_file)
+          Python::FileUpdater::PipfilePreparer
+            .new(pipfile_content: pipfile_content)
+            .update_ssl_requirement(parsed_file)
         end
 
         def add_private_sources(pipfile_content)

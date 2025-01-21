@@ -1,10 +1,11 @@
 defmodule DependencyHelper do
   def main() do
-    IO.read(:stdio, :all)
+    IO.read(:stdio, :eof)
     |> Jason.decode!()
     |> run()
     |> case do
       {output, 0} ->
+        output = Base.decode64!(output)
         if output =~ "No authenticated organization found" do
           {:error, output}
         else
@@ -12,6 +13,7 @@ defmodule DependencyHelper do
         end
 
       {error, 1} ->
+        Base.decode64!(error)
         {:error, error}
     end
     |> handle_result()
@@ -118,7 +120,7 @@ defmodule DependencyHelper do
   end
 
   defp fetch_public_key(repo, repo_url, auth_key, fingerprint) do
-    case Hex.Repo.get_public_key(repo_url, auth_key) do
+    case Hex.Repo.get_public_key(%{trusted: true, url: repo_url, auth_key: auth_key}) do
       {:ok, {200, key, _}} ->
         if public_key_matches?(key, fingerprint) do
           {:ok, key}
