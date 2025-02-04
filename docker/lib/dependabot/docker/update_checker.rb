@@ -108,7 +108,7 @@ module Dependabot
       # NOTE: It's important that this *always* returns a tag (even if
       # it's the existing one) as it is what we later check the digest of.
       def fetch_latest_tag(version_tag)
-        return Tag.new(latest_digest) if version_tag.digest?
+        return Tag.new(latest_digest) if version_tag.digest? && latest_digest
         return version_tag unless version_tag.comparable?
 
         # Prune out any downgrade tags before checking for pre-releases
@@ -232,7 +232,7 @@ module Dependabot
         attempt ||= 1
         attempt += 1
         return if attempt > 3 && e.is_a?(DockerRegistry2::NotFound)
-        raise if attempt > 3
+        raise PrivateSourceBadResponse, registry_hostname if attempt > 3
 
         retry
       rescue DockerRegistry2::RegistryAuthenticationException,
@@ -274,7 +274,9 @@ module Dependabot
       end
 
       def registry_hostname
-        return dependency.requirements.first[:source][:registry] if dependency.requirements.first[:source][:registry]
+        if dependency.requirements.first&.dig(:source, :registry)
+          return T.must(dependency.requirements.first).dig(:source, :registry)
+        end
 
         credentials_finder.base_registry
       end
@@ -298,15 +300,28 @@ module Dependabot
         "library/#{dependency.name}"
       end
 
+      # Defaults from https://github.com/deitch/docker_registry2/blob/bfde04144f0b7fd63c156a1aca83efe19ee78ffd/lib/registry/registry.rb#L26-L27
+      DEFAULT_DOCKER_OPEN_TIMEOUT_IN_SECONDS = 2
+      DEFAULT_DOCKER_READ_TIMEOUT_IN_SECONDS = 5
+
       def docker_registry_client
         @docker_registry_client ||=
           DockerRegistry2::Registry.new(
             "https://#{registry_hostname}",
             user: registry_credentials&.fetch("username", nil),
             password: registry_credentials&.fetch("password", nil),
-            read_timeout: 10,
+            read_timeout: docker_read_timeout_in_seconds,
+            open_timeout: docker_open_timeout_in_seconds,
             http_options: { proxy: ENV.fetch("HTTPS_PROXY", nil) }
           )
+      end
+
+      def docker_open_timeout_in_seconds
+        ENV.fetch("DEPENDABOT_DOCKER_OPEN_TIMEOUT_IN_SECONDS", DEFAULT_DOCKER_OPEN_TIMEOUT_IN_SECONDS).to_i
+      end
+
+      def docker_read_timeout_in_seconds
+        ENV.fetch("DEPENDABOT_DOCKER_READ_TIMEOUT_IN_SECONDS", DEFAULT_DOCKER_READ_TIMEOUT_IN_SECONDS).to_i
       end
 
       def sort_tags(candidate_tags, version_tag)
@@ -355,7 +370,7 @@ module Dependabot
       end
 
       def version_tag
-        @version_tag ||= Tag.new(dependency.version)
+        @version_tag ||= Tag.new(T.must(dependency.version))
       end
     end
   end

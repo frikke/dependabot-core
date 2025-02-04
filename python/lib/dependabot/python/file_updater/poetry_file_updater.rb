@@ -19,7 +19,9 @@ module Dependabot
       class PoetryFileUpdater
         require_relative "pyproject_preparer"
 
-        attr_reader :dependencies, :dependency_files, :credentials
+        attr_reader :dependencies
+        attr_reader :dependency_files
+        attr_reader :credentials
 
         def initialize(dependencies:, dependency_files:, credentials:)
           @dependencies = dependencies
@@ -71,7 +73,7 @@ module Dependabot
             updated_content = replace_dep(dependency, updated_content, new_r, old_r)
           end
 
-          raise "Content did not change!" if content == updated_content
+          raise DependencyFileContentNotChanged, "Content did not change!" if content == updated_content
 
           updated_content
         end
@@ -247,7 +249,8 @@ module Dependabot
         def declaration_regex(dep, old_req)
           group = old_req[:groups].first
 
-          /#{group}(?:\.dependencies)?\]\s*\n.*?(?<declaration>(?:^\s*|["'])#{escape(dep)}["']?\s*=[^\n]*)$/mi
+          header_regex = "#{group}(?:\\.dependencies)?\\]\s*(?:\s*#.*?)*?"
+          /#{header_regex}\n.*?(?<declaration>(?:^\s*|["'])#{escape(dep)}["']?\s*=[^\n]*)$/mi
         end
 
         def table_declaration_regex(dep, old_req)
